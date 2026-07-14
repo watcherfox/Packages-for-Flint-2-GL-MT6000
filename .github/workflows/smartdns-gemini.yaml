@@ -85,13 +85,14 @@ jobs:
       - name: Integrate SmartDNS directly to packages
         working-directory: ${{ env.SDK_DIR }}
         run: |
+          # Клонируем репозиторий демона напрямую в папку package/smartdns
           git clone --depth 1 --branch "${{ inputs.smartdns_ref }}" \
-            https://github.com/pymumu/openwrt-smartdns /tmp/smartdns-repo
+            https://github.com/pymumu/openwrt-smartdns package/smartdns
           
-          cp -r /tmp/smartdns-repo/smartdns ./package/
-          
+          # Интерфейс LuCI находится в отдельном репозитории, клонируем его
           if [ "${{ inputs.build_luci }}" = "true" ]; then
-            cp -r /tmp/smartdns-repo/luci-app-smartdns ./package/
+            git clone --depth 1 --branch "master" \
+              https://github.com/pymumu/luci-app-smartdns package/luci-app-smartdns
           fi
 
       - name: Configure .config

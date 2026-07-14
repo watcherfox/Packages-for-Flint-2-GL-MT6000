@@ -1,62 +1,53 @@
-name: Build AdGuardHome for OpenWrt 24.10 (Flint 2 GL-MT6000)
-
+name: Build AdGuardHome for OpenWrt 25.12 (Flint 2 GL-MT6000)
 on:
   workflow_dispatch:
-
 jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
-
     steps:
       - name: Checkout OpenWrt source
         uses: actions/checkout@v4
         with:
           repository: openwrt/openwrt
-          ref: openwrt-24.10
+          ref: openwrt-25.12
           fetch-depth: 0
           path: openwrt
-
       - name: Checkout OpenWrt packages repo
         uses: actions/checkout@v4
         with:
           repository: openwrt/packages
           path: packages
-          ref: master
+          ref: openwrt-25.12
           fetch-depth: 0
-
       - name: Copy dependencies into OpenWrt tree
         run: |
           # Replace AdGuardHome
           rm -rf openwrt/package/net/adguardhome || true
           mkdir -p openwrt/package/net
           cp -r packages/net/adguardhome openwrt/package/net/
-
           # Replace golang (required for rebuild)
           rm -rf openwrt/package/lang/golang || true
           mkdir -p openwrt/package/lang
           cp -r packages/lang/golang openwrt/package/lang/
-
       - name: Update AdGuardHome to latest version
         run: |
           cd openwrt
           LATEST_VERSION=$(curl -s https://api.github.com/repos/AdguardTeam/AdGuardHome/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/^v//')
           sed -i "s/PKG_VERSION:=.*/PKG_VERSION:=$LATEST_VERSION/" package/net/adguardhome/Makefile
-
       - name: Install build dependencies
         run: |
           sudo apt update
           sudo apt install -y \
             build-essential clang flex bison gawk gcc-multilib g++-multilib \
             gettext libncurses-dev libssl-dev python3 python3-setuptools \
-            rsync unzip zlib1g-dev file wget
-
+            rsync unzip zlib1g-dev file wget \
+            meson ninja-build cmake pkg-config
       - name: Update and install all feeds
         run: |
           cd openwrt
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-
       - name: Prepare config for Flint 2 (MT7986A)
         run: |
           cd openwrt
@@ -65,24 +56,22 @@ jobs:
             echo "CONFIG_TARGET_mediatek=y"
             echo "CONFIG_TARGET_mediatek_filogic=y"
             echo "CONFIG_TARGET_mediatek_filogic_DEVICE_glinet_gl-mt6000=y"
+            echo "CONFIG_USE_APK=y"
             echo "CONFIG_PACKAGE_adguardhome=m"
           } > .config
           make defconfig
-
       - name: Build toolchain
         run: |
           cd openwrt
           make toolchain/install -j$(nproc)
-
       - name: Build AdGuardHome package
         run: |
           cd openwrt
           make package/adguardhome/compile -j$(nproc) V=s IGNORE_ERRORS=1
-
       - name: Upload built packages
         uses: actions/upload-artifact@v4
         with:
-          name: adguardhome-flint2-openwrt-24.10
+          name: adguardhome-flint2-openwrt-25.12
           path: |
-            openwrt/bin/packages/**/adguardhome*.ipk
-            openwrt/bin/targets/**/packages/adguardhome*.ipk
+            openwrt/bin/packages/**/adguardhome*.apk
+            openwrt/bin/targets/**/packages/adguardhome*.apk

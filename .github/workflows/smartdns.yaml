@@ -56,7 +56,7 @@ jobs:
           path: sdk-cache
           key: sdk-${{ inputs.openwrt_version }}-${{ inputs.target }}-${{ inputs.subtarget }}
 
-- name: Download SDK
+      - name: Download SDK
         run: |
           mkdir -p sdk-cache
           if [ ! -f "sdk-cache/$SDK_FILE" ]; then
@@ -66,7 +66,27 @@ jobs:
             echo "Архив успешно получен из кэша GitHub."
           fi
           cp "sdk-cache/$SDK_FILE" .
-          else
-            echo "Архив успешно получен из кэша GitHub."
-          fi
-          cp "
+
+      - name: Extract SDK
+        run: |
+          case "$SDK_FILE" in
+            *.tar.zst) tar --zstd -xf "$SDK_FILE" ;;
+            *.tar.xz)  tar -xJf "$SDK_FILE" ;;
+          esac
+          SDK_DIR=$(echo "$SDK_FILE" \vert{} sed -E 's/\.tar\.(zst\vert{}xz)$//')
+          echo "SDK_DIR=$SDK_DIR" >> "$GITHUB_ENV"
+
+      - name: Update Feeds (Fetch Makefiles only)
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          ./scripts/feeds update packages luci
+
+      - name: Integrate SmartDNS and Strip Dependencies
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          git clone --depth 1 --branch "${{ inputs.smartdns_ref }}" \
+            https://github.com/pymumu/openwrt-smartdns package/smartdns
+          
+          if [ "${{ inputs.build_luci }}" = "true" ]; then
+            git clone --depth 1 --branch "master" \
+              https://github.com/pymumu/luci-app-smartdns package

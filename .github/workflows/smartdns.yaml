@@ -79,29 +79,21 @@ jobs:
       - name: Update Feeds (Fetch Makefiles only)
         working-directory: ${{ env.SDK_DIR }}
         run: |
-          # Скачиваем только файлы описания фидов (без запуска ./scripts/feeds install -a).
-          # Это мгновенно создаст файлы rust-package.mk и luci.mk, необходимые для сборки,
-          # но предотвратит попытки пересборки системных библиотек из исходников.
           ./scripts/feeds update packages luci
 
       - name: Integrate SmartDNS and Strip Dependencies
         working-directory: ${{ env.SDK_DIR }}
         run: |
-          # Клонируем исходники демона напрямую в package/
           git clone --depth 1 --branch "${{ inputs.smartdns_ref }}" \
             https://github.com/pymumu/openwrt-smartdns package/smartdns
           
           if [ "${{ inputs.build_luci }}" = "true" ]; then
-            # Клонируем панель управления
             git clone --depth 1 --branch "master" \
               https://github.com/pymumu/luci-app-smartdns package/luci-app-smartdns
           fi
           
-          # Убираем внешние зависимости (openssl и т.д.) из Makefile демона.
-          # Это запретит SDK пытаться пересобирать системные библиотеки из исходников.
           sed -i 's/DEPENDS\s*:=.*/DEPENDS:=/g' package/smartdns/Makefile
           
-          # Для панели LuCI оставляем в зависимостях только сам smartdns, который мы компилируем здесь же.
           if [ "${{ inputs.build_luci }}" = "true" ]; then
             sed -i 's/DEPENDS\s*:=.*/DEPENDS:=+smartdns/g' package/luci-app-smartdns/Makefile
           fi
@@ -109,28 +101,20 @@ jobs:
       - name: Configure .config
         working-directory: ${{ env.SDK_DIR }}
         run: |
-          # Сбрасываем кэш SDK, чтобы он корректно пересканировал директорию package/
           rm -rf tmp
-          
           echo "CONFIG_PACKAGE_smartdns=m" >> .config
           if [ "${{ inputs.build_luci }}" = "true" ]; then
             echo "CONFIG_PACKAGE_luci-app-smartdns=m" >> .config
           fi
-       - name: Fix smartdns-webui hash mismatch
-      run: |
-        find . -type f -name "Makefile" -exec sed -i 's/42e280cbfc168f88690652b85ce919c2aeedc9ef7c4b55122742e484b23492cd/2d7769f3b8b3c1c22fb423dea565e41051e178fe04b6a321310b96d89d8925d1/g' {} +
-
-       - name: Compile packages
-      run: |
-        # Твоя текущая команда сборки, например:
-        make package/smartdns/compile V=s
-          # Заполняем конфигурационный файл
           make defconfig
+
+      - name: Fix smartdns-webui hash mismatch
+        run: |
+          find . -type f -name "Makefile" -exec sed -i 's/42e280cbfc168f88690652b85ce919c2aeedc9ef7c4b55122742e484b23492cd/2d7769f3b8b3c1c22fb423dea565e41051e178fe04b6a321310b96d89d8925d1/g' {} +
 
       - name: Compile packages
         working-directory: ${{ env.SDK_DIR }}
         run: |
-          # Компилируем исключительно наши пакеты
           make package/smartdns/compile V=s -j$(nproc)
           
           if [ "${{ inputs.build_luci }}" = "true" ]; then
@@ -141,7 +125,6 @@ jobs:
         working-directory: ${{ env.SDK_DIR }}
         run: |
           mkdir -p /tmp/artifacts
-          # Копируем только файлы .apk, исключая пакеты локализации (*i18n*)
           find bin/packages/ -type f -name "*smartdns*.apk" ! -name "*i18n*" -exec cp {} /tmp/artifacts/ \;
           
           echo "--- Список собранных пакетов (только .apk, без локализации) ---"

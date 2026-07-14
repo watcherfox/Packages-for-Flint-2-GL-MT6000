@@ -1,4 +1,4 @@
-name: Build SmartDNS ipk
+name: Build SmartDNS apk for Flint2
 
 on:
   workflow_dispatch:

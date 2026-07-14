@@ -1,0 +1,130 @@
+name: Build SmartDNS for Flint2 (GL-MT6000)
+
+on:
+  workflow_dispatch:
+    inputs:
+      openwrt_version:
+        description: 'Версия OpenWrt (напр., 25.12.5). С версии 25.12 сборка идёт только в .apk'
+        required: true
+        default: '25.12.5'
+      target:
+        description: 'Target (Платформа)'
+        required: true
+        default: 'mediatek'
+      subtarget:
+        description: 'Subtarget (Архитектура процессора)'
+        required: true
+        default: 'filogic'
+      smartdns_ref:
+        description: 'Ветка или тег репозитория openwrt-smartdns'
+        required: true
+        default: 'master'
+      build_luci:
+        description: 'Собирать luci-app-smartdns (панель управления в LuCI)'
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libncurses-dev zlib1g-dev gawk git gettext \
+            libssl-dev xsltproc rsync wget unzip python3 zstd file \
+            gcc-multilib g++-multilib
+
+      - name: Locate SDK filename
+        run: |
+          BASE_URL="https://downloads.openwrt.org/releases/${{ inputs.openwrt_version }}/targets/${{ inputs.target }}/${{ inputs.subtarget }}"
+          echo "BASE_URL=$BASE_URL" >> "$GITHUB_ENV"
+          
+          SDK_FILE=$(curl -fsSL "$BASE_URL/" | grep -oE 'openwrt-sdk-[A-Za-z0-9._-]+\.tar\.(zst|xz)' | head -n1)
+          if [ -z "$SDK_FILE" ]; then
+            echo "Ошибка: Не удалось найти SDK в директории $BASE_URL. Проверьте версию/таргет." >&2
+            exit 1
+          fi
+          echo "SDK_FILE=$SDK_FILE" >> "$GITHUB_ENV"
+          echo "Найден SDK: $SDK_FILE"
+
+      - name: Cache SDK Archive
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: sdk-cache
+          key: sdk-${{ inputs.openwrt_version }}-${{ inputs.target }}-${{ inputs.subtarget }}
+
+      - name: Download SDK
+        run: |
+          mkdir -p sdk-cache
+          if [ ! -f "sdk-cache/$SDK_FILE" ]; then
+            echo "Архив не найден в кэше. Скачиваю..."
+            wget -q -O "sdk-cache/$SDK_FILE" "$BASE_URL/$SDK_FILE"
+          else
+            echo "Архив успешно получен из кэша GitHub."
+          fi
+          cp "sdk-cache/$SDK_FILE" .
+
+      - name: Extract SDK
+        run: |
+          case "$SDK_FILE" in
+            *.tar.zst) tar --zstd -xf "$SDK_FILE" ;;
+            *.tar.xz)  tar -xJf "$SDK_FILE" ;;
+          esac
+          SDK_DIR=$(echo "$SDK_FILE" | sed -E 's/\.tar\.(zst|xz)$//')
+          echo "SDK_DIR=$SDK_DIR" >> "$GITHUB_ENV"
+
+      - name: Update and Install standard feeds
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Integrate SmartDNS directly to packages
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          git clone --depth 1 --branch "${{ inputs.smartdns_ref }}" \
+            https://github.com/pymumu/openwrt-smartdns /tmp/smartdns-repo
+          
+          cp -r /tmp/smartdns-repo/smartdns ./package/
+          
+          if [ "${{ inputs.build_luci }}" = "true" ]; then
+            cp -r /tmp/smartdns-repo/luci-app-smartdns ./package/
+          fi
+
+      - name: Configure .config
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          echo "CONFIG_PACKAGE_smartdns=m" >> .config
+          if [ "${{ inputs.build_luci }}" = "true" ]; then
+            echo "CONFIG_PACKAGE_luci-app-smartdns=m" >> .config
+          fi
+          make defconfig
+
+      - name: Compile packages
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          make package/smartdns/compile V=s -j$(nproc)
+          
+          if [ "${{ inputs.build_luci }}" = "true" ]; then
+            make package/luci-app-smartdns/compile V=s -j$(nproc)
+          fi
+
+      - name: Collect artifacts
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          mkdir -p /tmp/artifacts
+          # Копируем только файлы .apk, исключая пакеты перевода (*i18n*)
+          find bin/packages/ -type f -name "*smartdns*.apk" ! -name "*i18n*" -exec cp {} /tmp/artifacts/ \;
+          
+          echo "--- Список собранных пакетов (только .apk, без локализации) ---"
+          ls -la /tmp/artifacts/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: smartdns-packages-${{ inputs.openwrt_version }}-${{ inputs.target }}-${{ inputs.subtarget }}
+          path: /tmp/artifacts/*.apk
+          if-no-files-found: error

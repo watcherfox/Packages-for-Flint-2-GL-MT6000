@@ -76,37 +76,54 @@ jobs:
           SDK_DIR=$(echo "$SDK_FILE" | sed -E 's/\.tar\.(zst|xz)$//')
           echo "SDK_DIR=$SDK_DIR" >> "$GITHUB_ENV"
 
-      - name: Integrate SmartDNS directly to packages
+      - name: Update Feeds (Fetch Makefiles only)
         working-directory: ${{ env.SDK_DIR }}
         run: |
-          # Клонируем репозитории напрямую в локальные пакеты
+          # Скачиваем только файлы описания фидов (без запуска ./scripts/feeds install -a).
+          # Это мгновенно создаст файлы rust-package.mk и luci.mk, необходимые для сборки,
+          # но предотвратит попытки пересборки системных библиотек из исходников.
+          ./scripts/feeds update packages luci
+
+      - name: Integrate SmartDNS and Strip Dependencies
+        working-directory: ${{ env.SDK_DIR }}
+        run: |
+          # Клонируем исходники демона напрямую в package/
           git clone --depth 1 --branch "${{ inputs.smartdns_ref }}" \
             https://github.com/pymumu/openwrt-smartdns package/smartdns
           
           if [ "${{ inputs.build_luci }}" = "true" ]; then
+            # Клонируем панель управления
             git clone --depth 1 --branch "master" \
               https://github.com/pymumu/luci-app-smartdns package/luci-app-smartdns
+          fi
+          
+          # Убираем внешние зависимости (openssl и т.д.) из Makefile демона.
+          # Это запретит SDK пытаться пересобирать системные библиотеки из исходников.
+          sed -i 's/DEPENDS\s*:=.*/DEPENDS:=/g' package/smartdns/Makefile
+          
+          # Для панели LuCI оставляем в зависимостях только сам smartdns, который мы компилируем здесь же.
+          if [ "${{ inputs.build_luci }}" = "true" ]; then
+            sed -i 's/DEPENDS\s*:=.*/DEPENDS:=+smartdns/g' package/luci-app-smartdns/Makefile
           fi
 
       - name: Configure .config
         working-directory: ${{ env.SDK_DIR }}
         run: |
-          # Сбрасываем кэш SDK, чтобы он просканировал только что добавленную папку package/
+          # Сбрасываем кэш SDK, чтобы он корректно пересканировал директорию package/
           rm -rf tmp
           
-          # Записываем наши пакеты в конфиг
           echo "CONFIG_PACKAGE_smartdns=m" >> .config
           if [ "${{ inputs.build_luci }}" = "true" ]; then
             echo "CONFIG_PACKAGE_luci-app-smartdns=m" >> .config
           fi
           
-          # Заполняем конфиг дефолтными значениями (SDK подхватит зависимости автоматически)
+          # Заполняем конфигурационный файл
           make defconfig
 
       - name: Compile packages
         working-directory: ${{ env.SDK_DIR }}
         run: |
-          # Собираем только наши пакеты, используя готовые зависимости из SDK
+          # Компилируем исключительно наши пакеты
           make package/smartdns/compile V=s -j$(nproc)
           
           if [ "${{ inputs.build_luci }}" = "true" ]; then
@@ -117,7 +134,7 @@ jobs:
         working-directory: ${{ env.SDK_DIR }}
         run: |
           mkdir -p /tmp/artifacts
-          # Копируем только файлы .apk, исключая пакеты перевода (*i18n*)
+          # Копируем только файлы .apk, исключая пакеты локализации (*i18n*)
           find bin/packages/ -type f -name "*smartdns*.apk" ! -name "*i18n*" -exec cp {} /tmp/artifacts/ \;
           
           echo "--- Список собранных пакетов (только .apk, без локализации) ---"

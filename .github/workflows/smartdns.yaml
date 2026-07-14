@@ -27,6 +27,11 @@ jobs:
           BASE_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${TARGET}/${SUBTARGET}"
           SDK_FILE=$(curl -fsSL "$BASE_URL/" | grep -oE 'openwrt-sdk-.*\.tar\.(zst|xz)' | head -n1)
 
+          if [ -z "$SDK_FILE" ]; then
+            echo "Ошибка: Не удалось найти файл SDK по адресу $BASE_URL"
+            exit 1
+          fi
+
           wget "$BASE_URL/$SDK_FILE"
 
           case "$SDK_FILE" in
@@ -79,9 +84,8 @@ define Package/smartdns/description
  SmartDNS improves DNS resolution speed using multiple upstream servers.
 endef
 
-define Build/Compile
-	$(MAKE) -C $(PKG_BUILD_DIR)
-endef
+# Блок Build/Compile удален — OpenWrt автоматически вызовет make 
+# с правильными флагами кросс-компиляции (aarch64)
 
 define Package/smartdns/install
 	$(INSTALL_DIR) $(1)/usr/sbin
@@ -216,6 +220,7 @@ EOF
         working-directory: ${{ env.SDK_DIR }}
         run: |
           mkdir -p /tmp/artifacts
+          # Собираем все полученные .apk файлы (для OpenWrt 25.12)
           find bin/packages/ -name "*smartdns*.apk" -exec cp {} /tmp/artifacts/ \;
 
       - name: Upload artifacts

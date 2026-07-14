@@ -1,2 +1,3 @@
-# AdGuardHome-for-Flint2
-adguardhome for GL-iNet Flint 2 GL-MT6000
+# GL-iNet Flint 2 GL-MT6000 OpenWRT 25.12 packages
+Adguardhome
+smartdns

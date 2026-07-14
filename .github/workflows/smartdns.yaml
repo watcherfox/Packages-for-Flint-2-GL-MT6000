@@ -82,14 +82,25 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Integrate SmartDNS directly to packages
+      - name: Force Custom SmartDNS Version (Kill OpenWrt 46.1)
         working-directory: ${{ env.SDK_DIR }}
         run: |
-          # Клонируем репозиторий демона напрямую в папку package/smartdns
+          echo "--- Удаление старой версии 46.1 из фидов OpenWrt ---"
+          # Деинсталлируем пакеты из индекса
+          ./scripts/feeds uninstall smartdns || true
+          ./scripts/feeds uninstall luci-app-smartdns || true
+          
+          # Жестко удаляем директории со старым кодом
+          rm -rf feeds/packages/net/smartdns
+          rm -rf feeds/luci/applications/luci-app-smartdns
+          rm -rf package/feeds/packages/smartdns
+          rm -rf package/feeds/luci/luci-app-smartdns
+          
+          echo "--- Клонирование самой свежей версии от pymumu ---"
+          # Клонируем новые версии напрямую в папку package, теперь они единственные в системе
           git clone --depth 1 --branch "${{ inputs.smartdns_ref }}" \
             https://github.com/pymumu/openwrt-smartdns package/smartdns
           
-          # Интерфейс LuCI находится в отдельном репозитории, клонируем его
           if [ "${{ inputs.build_luci }}" = "true" ]; then
             git clone --depth 1 --branch "master" \
               https://github.com/pymumu/luci-app-smartdns package/luci-app-smartdns
@@ -126,6 +137,6 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: smartdns-packages-${{ inputs.openwrt_version }}-${{ inputs.target }}-${{ inputs.subtarget }}
+          name: smartdns-latest-${{ inputs.openwrt_version }}-${{ inputs.target }}-${{ inputs.subtarget }}
           path: /tmp/artifacts/*.apk
           if-no-files-found: error

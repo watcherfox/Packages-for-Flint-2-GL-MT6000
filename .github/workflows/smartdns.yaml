@@ -44,41 +44,30 @@ jobs:
         run: |
           git clone https://github.com/pymumu/openwrt-smartdns package/smartdns
 
-      # 🔴 КЛЮЧЕВОЙ ФИКС: версия 48.2
-      - name: Override SmartDNS version
-        working-directory: ${{ env.SDK_DIR }}/package/smartdns
-        run: |
-          mkdir -p patches
-
-          cat > patches/001-version.patch << EOF
---- a/Makefile
-+++ b/Makefile
-@@
--PKG_VERSION:=46.1
-+PKG_VERSION:=${SMARTDNS_VERSION}
-@@
--PKG_SOURCE_VERSION:=v46.1
-+PKG_SOURCE_VERSION:=v${SMARTDNS_VERSION}
-@@
-+PKG_BUILD_FLAGS:=no-mips16
-EOF
-
       - name: Configure
         working-directory: ${{ env.SDK_DIR }}
         run: |
           echo "CONFIG_PACKAGE_smartdns=m" >> .config
           make defconfig
 
-      - name: Download sources
+      # 🔴 КЛЮЧ: переопределение версии напрямую
+      - name: Download sources (48.2)
         working-directory: ${{ env.SDK_DIR }}
         run: |
-          make package/smartdns/download V=s
+          make package/smartdns/download V=s \
+            PKG_VERSION=${SMARTDNS_VERSION} \
+            PKG_SOURCE_VERSION=v${SMARTDNS_VERSION}
 
-      - name: Build
+      - name: Build (48.2)
         working-directory: ${{ env.SDK_DIR }}
         run: |
-          make package/smartdns/compile V=s -j$(nproc) || \
-          make package/smartdns/compile V=s -j1
+          make package/smartdns/compile V=s -j$(nproc) \
+            PKG_VERSION=${SMARTDNS_VERSION} \
+            PKG_SOURCE_VERSION=v${SMARTDNS_VERSION} \
+          || \
+          make package/smartdns/compile V=s -j1 \
+            PKG_VERSION=${SMARTDNS_VERSION} \
+            PKG_SOURCE_VERSION=v${SMARTDNS_VERSION}
 
       - name: Collect
         working-directory: ${{ env.SDK_DIR }}

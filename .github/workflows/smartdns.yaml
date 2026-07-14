@@ -56,12 +56,16 @@ jobs:
           path: sdk-cache
           key: sdk-${{ inputs.openwrt_version }}-${{ inputs.target }}-${{ inputs.subtarget }}
 
-      - name: Download SDK
+- name: Download SDK
         run: |
           mkdir -p sdk-cache
           if [ ! -f "sdk-cache/$SDK_FILE" ]; then
             echo "Архив не найден в кэше. Скачиваю..."
             wget -q -O "sdk-cache/$SDK_FILE" "$BASE_URL/$SDK_FILE"
+          else
+            echo "Архив успешно получен из кэша GitHub."
+          fi
+          cp "sdk-cache/$SDK_FILE" .
           else
             echo "Архив успешно получен из кэша GitHub."
           fi

@@ -1,0 +1,222 @@
+name: Build and Release Artifacts
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch: # Allows manual trigger from GitHub UI for testing
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build Cross-Compiled Artifacts
+    runs-on: ubuntu-22.04
+
+    steps:
+      # 1. Checkout the repository
+      - name: Checkout Code
+        uses: actions/checkout@v6
+
+      # 2. Install system dependencies
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtest-dev dnsperf jq wget unzip tar make gcc
+
+          # Download and install Alpine's apk.static dynamically
+          APK_FILE=$(wget -qO- https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/x86_64/ | grep -oE 'apk-tools-static-[0-9][a-zA-Z0-9.-]*\.apk' | head -n 1)
+          wget "https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/x86_64/$APK_FILE" -O /tmp/apk-tools-static.apk
+          tar -zxf /tmp/apk-tools-static.apk -C /tmp
+          sudo cp /tmp/sbin/apk.static /usr/local/bin/apk
+          sudo cp /tmp/sbin/apk.static /usr/bin/apk
+          sudo chmod +x /usr/local/bin/apk /usr/bin/apk
+          apk --version
+
+      # 3. Cache Musl Toolchain and OpenSSL for aarch64
+      - name: Cache Musl Toolchain and OpenSSL
+        uses: actions/cache@v5
+        id: cache-toolchain
+        with:
+          path: ~/toolchain
+          key: ${{ runner.os }}-toolchain-openssl-aarch64-3.5.4-v1
+
+      # 4. Link Cached Toolchains to /opt/toolchain
+      - name: Link Cached Toolchains
+        run: |
+          sudo mkdir -p /opt
+          sudo ln -sfn "$HOME/toolchain" /opt/toolchain
+
+      # 5. Download and extract aarch64 musl-cross toolchain
+      - name: Setup Musl Cross-Compiler (aarch64)
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/toolchain
+
+          download_and_extract() {
+            local url="$1"
+            local dest_dir="$2"
+            local tmp_file="/tmp/toolchain.tgz"
+            local max_attempts=5
+            local attempt=1
+
+            while [ $attempt -le $max_attempts ]; do
+              echo "Downloading $url (Attempt $attempt/$max_attempts)..."
+              rm -f "$tmp_file"
+              if wget -q --timeout=30 --tries=3 "$url" -O "$tmp_file"; then
+                if gzip -t "$tmp_file" >/dev/null 2>&1; then
+                  echo "Download successful and verified."
+                  tar -C "$dest_dir" -xzf "$tmp_file"
+                  rm -f "$tmp_file"
+                  return 0
+                else
+                  echo "Downloaded file is corrupted/incomplete."
+                fi
+              fi
+              echo "Attempt $attempt failed. Retrying in 5 seconds..."
+              sleep 5
+              attempt=$((attempt+1))
+            done
+            echo "Failed to download $url after $max_attempts attempts."
+            return 1
+          }
+
+          url="https://github.com/OpenListTeam/musl-compilers/releases/download/2025-06-12/aarch64-linux-musl-cross.tgz"
+          dir_name="aarch64-linux-musl-cross"
+          target_name="aarch64-unknown-linux-musl"
+
+          echo "Installing aarch64 toolchain..."
+          download_and_extract "$url" "$HOME/toolchain"
+          ln -s "$dir_name" "$HOME/toolchain/$target_name"
+
+          # Symlink prefix commands to -unknown- equivalents
+          prefix_from="aarch64-linux-musl"
+          prefix_to="aarch64-unknown-linux-musl"
+
+          for f in "$HOME/toolchain/$dir_name/bin/$prefix_from"-*; do
+            if [ -f "$f" ]; then
+              base=$(basename "$f")
+              new_base=$(echo "$base" | sed "s/$prefix_from/$prefix_to/")
+              ln -s "$f" "$HOME/toolchain/$dir_name/bin/$new_base"
+            fi
+          done
+
+          # Create a symlink to objdump
+          ln -s "aarch64-linux-musl-objdump" "$HOME/toolchain/$dir_name/bin/objdump"
+
+      # 6. Download and compile OpenSSL for aarch64
+      - name: Compile OpenSSL for Cross-Compiler
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          wget -q https://github.com/openssl/openssl/releases/download/openssl-3.5.4/openssl-3.5.4.tar.gz -O /tmp/openssl-3.5.4.tar.gz
+
+          cc_path="/opt/toolchain/aarch64-unknown-linux-musl/bin/aarch64-unknown-linux-musl-gcc"
+          target="linux-aarch64"
+
+          echo "==========================================="
+          echo "Building OpenSSL for aarch64..."
+          echo "==========================================="
+          sysroot=$($cc_path --print-sysroot)
+          mkdir -p /tmp/build-openssl
+          cd /tmp/build-openssl
+          rm -rf openssl-3.5.4
+          tar -xzf /tmp/openssl-3.5.4.tar.gz
+          cd openssl-3.5.4
+
+          CC="$cc_path" ./Configure "$target" \
+            --prefix="$sysroot" \
+            no-shared no-tests no-apps \
+            no-argon2 no-aria no-async no-bf no-blake2 no-camellia no-cmp no-cms \
+            no-comp no-des no-dh no-dsa no-ec2m no-engine no-gost \
+            no-http no-idea no-legacy no-md4 no-mdc2 no-multiblock \
+            no-nextprotoneg no-ocb no-ocsp no-rc2 no-rc4 no-rmd160 \
+            no-scrypt no-seed no-siphash no-siv no-sm2 no-sm3 no-sm4 \
+            no-srp no-srtp no-ts no-whirlpool no-ssl-trace no-ssl no-ssl3 -Os
+
+          make -j$(nproc)
+          sudo make install_sw
+
+      # 7. Run the build script
+      - name: Build aarch64 Targets
+        run: |
+          # Determine release version
+          export RELEASE_VERSION="$(date +"1.%Y.%m.%d-%H%M")"
+          echo "Building Version: ${RELEASE_VERSION}"
+
+          # Write build-static.sh on-the-fly
+          cat << 'EOF' > build-static.sh
+          #!/bin/sh
+          set -e
+
+          ORIG_PATH="$PATH"
+          CURR_DIR=$(cd $(dirname $0);pwd)
+          VER="${RELEASE_VERSION:-$(date +"1.%Y.%m.%d-%H%M")}"
+          CODE_DIR=$(pwd)
+
+          build()
+          {
+              local BUILD_OPT
+              BUILD_OPT="$BUILD_OPT --platform $2" 
+              BUILD_OPT="$BUILD_OPT --arch all" 
+              BUILD_OPT="$BUILD_OPT --filearch=$1-$2-all " 
+              BUILD_OPT="$BUILD_OPT --ver $VER" 
+              BUILD_OPT="$BUILD_OPT --outputdir $CURR_DIR" 
+              if [ ! -z "$CORSS_TOOL" ]; then
+                  BUILD_OPT="$BUILD_OPT --cross-tool $CORSS_TOOL"
+              fi
+              if [ "$3" = "nobuild" ]; then
+                  BUILD_OPT="$BUILD_OPT --only-package"
+              fi
+
+              chmod +x $CODE_DIR/package/build-pkg.sh
+
+              # Prepend target's toolchain bin directory to PATH
+              export PATH="$ORIG_PATH"
+              if [ -n "$CC" ]; then
+                  local TC_BIN_DIR=$(dirname "$CC")
+                  export PATH="$TC_BIN_DIR:$PATH"
+              fi
+
+              $CODE_DIR/package/build-pkg.sh $BUILD_OPT || { echo "build-pkg.sh failed for $1 $2"; exit 1; }
+              if [ "$3" != "nobuild" ]; then
+                  cp $CODE_DIR/src/smartdns $CURR_DIR/smartdns-$1 || { echo "Failed to copy smartdns binary"; exit 1; }
+              fi
+          }
+
+          clean() 
+          {
+              make -C $CODE_DIR clean || true
+          }
+
+          rm -f $CURR_DIR/smartdns.*
+          rm -f $CURR_DIR/*.ipk
+          rm -f $CURR_DIR/*.apk
+          rm -f $CURR_DIR/*.deb
+          rm -f $CURR_DIR/smartdns-*
+
+          unset CC
+
+          export STATIC=yes
+          export CFLAGS="-DFEATURE_CHECK_EDNS -O2 -g -Wall -Wstrict-prototypes -fno-omit-frame-pointer -Wstrict-aliasing -funwind-tables -Wmissing-prototypes -Wshadow -Wextra -Wno-unused-parameter -Wno-implicit-fallthrough"
+
+          # Build aarch64 without WebUI/LuCI
+          export CC=/opt/toolchain/aarch64-unknown-linux-musl/bin/aarch64-unknown-linux-musl-gcc
+          build aarch64 optware 
+          build aarch64 openwrt nobuild 
+          build aarch64 debian nobuild
+          build aarch64 linux nobuild
+          clean
+          unset CC
+
+          make -C $CODE_DIR/src clean || true
+          EOF
+
+          chmod +x build-static.sh
+          ./build-static.sh
+
+          echo "=== List of all files generated in workspace ==="
+          ls -la
+          echo "=========="
